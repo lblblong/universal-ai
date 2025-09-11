@@ -1,0 +1,33 @@
+{
+  "name": "universal-ai",
+  "version": "0.0.1",
+  "type": "module",
+  "types": "./dist/index.d.ts",
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "dev": "tsc && vite build -w",
+    "build": "tsc && vite build",
+    "preview": "vite preview",
+    "prepublishOnly": "tsc && vite build"
+  },
+  "devDependencies": {
+    "@types/node": "^24.3.1",
+    "typescript": "~5.8.3",
+    "vite": "^7.1.2",
+    "vite-plugin-dts": "^4.5.4"
+  },
+  "dependencies": {
+    "@ai-sdk/provider-utils": "^3.0.8",
+    "ai": "^5.0.39"
+  }
+}
+
