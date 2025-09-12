@@ -1,3 +1,3 @@
-export { lastAssistantMessageIsCompleteWithToolCalls } from 'ai'
+export * from 'ai'
 export { Chat } from './Chat'
 
