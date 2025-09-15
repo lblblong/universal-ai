@@ -13,7 +13,13 @@ export default defineConfig({
     },
     rollupOptions: {
       // 确保外部化处理那些你不想打包进库的依赖
-      external: ['ai', '@ai-sdk/provider-utils', '@libeilong/func'],
+      external: [
+        'ai',
+        'zod',
+        'zod/v4',
+        '@ai-sdk/provider-utils',
+        '@libeilong/func',
+      ],
     },
   },
 })
