@@ -26,8 +26,8 @@
     "vite-plugin-dts": "^4.5.4"
   },
   "dependencies": {
-    "@ai-sdk/provider-utils": "^3.0.20",
-    "ai": "^5.0.121",
-    "zod": "^4.1.8"
+    "@ai-sdk/provider-utils": "^4.0.14",
+    "ai": "^6.0.75",
+    "zod": "^4.3.6"
   }
 }
