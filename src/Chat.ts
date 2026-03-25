@@ -77,8 +77,11 @@ export class Chat<
       body?: Record<string, any>
     }
   ) {
+    const { onToolCall, ...rest } = init
+
     super({
-      ...init,
+      ...rest,
+      onToolCall,
       state: new UniversalChatState(),
       transport: new DefaultChatTransport({
         api: init.api,
