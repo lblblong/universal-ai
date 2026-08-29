@@ -1,6 +1,6 @@
 {
   "name": "universal-ai",
-  "version": "1.0.2",
+  "version": "2.0.0",
   "type": "module",
   "main": "dist/index.js",
   "typings": "dist/index.d.mts",
@@ -19,8 +19,8 @@
     "typescript": "~5.8.3"
   },
   "dependencies": {
-    "@ai-sdk/provider-utils": "^4.0.21",
-    "ai": "^6.0.137",
-    "zod": "^4.1.8"
+    "@ai-sdk/provider-utils": "^5.0.33",
+    "ai": "^7.0.84",
+    "zod": "^4.5.2"
   }
 }
