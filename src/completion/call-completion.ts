@@ -1,7 +1,6 @@
-import { parseJsonEventStream, ParseResult } from '@ai-sdk/provider-utils'
-import { consumeStream, UIMessage, UIMessageChunk } from 'ai'
-import { z } from 'zod/v4'
-import { processTextStream } from './utils/processTextStream'
+import { parseJsonEventStream, type ParseResult } from '../sse/parse-json-event-stream'
+import type { UIMessage } from '../types/message'
+import type { UIMessageChunk } from '../types/chunk'
 
 interface SimpleMessage {
   role: 'user' | 'assistant' | 'system' | 'function'
@@ -70,47 +69,38 @@ export async function callCompletion(opts: {
 
   switch (streamProtocol) {
     case 'text': {
-      await processTextStream({
-        stream: response.body,
-        onTextPart: (chunk) => {
-          result += chunk
+      const reader = response.body
+        .pipeThrough(new TextDecoderStream() as unknown as TransformStream<Uint8Array, string>)
+        .getReader()
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+        result += value
+        onCompletion?.(result, {
+          role: 'assistant',
+          parts: [{ type: 'text', text: result }],
+        })
+      }
+      break
+    }
+    case 'data': {
+      const chunkStream = parseJsonEventStream<UIMessageChunk>({ stream: response.body })
+      for await (const part of chunkStream as ReadableStream<ParseResult<UIMessageChunk>>) {
+        if (!part.success) {
+          throw part.error
+        }
+
+        const streamPart = part.value
+        if (streamPart.type === 'text-delta') {
+          result += streamPart.delta
           onCompletion?.(result, {
             role: 'assistant',
             parts: [{ type: 'text', text: result }],
           })
-        },
-      })
-      break
-    }
-    case 'data': {
-      await consumeStream({
-        stream: parseJsonEventStream({
-          stream: response.body,
-          schema: z.unknown(),
-        }).pipeThrough(
-          new TransformStream<ParseResult<UIMessageChunk>, UIMessageChunk>({
-            async transform(part) {
-              if (!part.success) {
-                throw part.error
-              }
-
-              const streamPart = part.value
-              if (streamPart.type === 'text-delta') {
-                result += streamPart.delta
-                onCompletion?.(result, {
-                  role: 'assistant',
-                  parts: [{ type: 'text', text: result }],
-                })
-              } else if (streamPart.type === 'error') {
-                throw new Error(streamPart.errorText)
-              }
-            },
-          })
-        ),
-        onError: (error) => {
-          throw error
-        },
-      })
+        } else if (streamPart.type === 'error') {
+          throw new Error(streamPart.errorText)
+        }
+      }
       break
     }
     default: {
@@ -124,4 +114,3 @@ export async function callCompletion(opts: {
     message: { role: 'assistant', parts: [{ type: 'text', text: result }] },
   }
 }
-

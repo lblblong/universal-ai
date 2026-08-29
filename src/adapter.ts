@@ -1,6 +1,7 @@
-import type { UIMessage } from 'ai'
+import type { UIMessage } from './types/message'
+import type { ChatSendTrigger } from './types/chat'
 
-export type ChatSendTrigger = 'submit-message' | 'regenerate-message'
+export type { ChatSendTrigger }
 
 export type ChatAdapter<UI_MESSAGE extends UIMessage = UIMessage> = {
   /**
