@@ -15,6 +15,7 @@ export async function callCompletion(opts: {
   credentials?: RequestCredentials
   headers?: Record<string, string> | Headers
   streamProtocol?: 'text' | 'data'
+  fetch?: typeof globalThis.fetch
   onCompletion?: (completion: string, message: Omit<UIMessage, 'id'>) => void
 }) {
   const {
@@ -24,6 +25,7 @@ export async function callCompletion(opts: {
     credentials,
     headers,
     streamProtocol = 'data',
+    fetch: fetchImpl = globalThis.fetch.bind(globalThis),
     onCompletion,
   } = opts
 
@@ -39,7 +41,7 @@ export async function callCompletion(opts: {
 
   onCompletion?.('', { role: 'assistant', parts: [] })
 
-  const response = await fetch(api, {
+  const response = await fetchImpl(api, {
     method: 'POST',
     body: JSON.stringify({
       messages,

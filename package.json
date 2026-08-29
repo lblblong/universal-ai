@@ -19,8 +19,8 @@
     "build": "tsdown",
     "prepublishOnly": "tsdown",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run",
-    "test:watch": "vitest"
+    "test": "NODE_USE_ENV_PROXY=1 vitest run",
+    "test:watch": "NODE_USE_ENV_PROXY=1 vitest"
   },
   "engines": {
     "node": ">=22"

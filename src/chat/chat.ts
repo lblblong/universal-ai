@@ -55,6 +55,7 @@ export class Chat<UI_MESSAGE extends UIMessage = UIMessage> {
   private readonly initialMessages?: UI_MESSAGE[]
 
   private activeAbortController: AbortController | undefined
+  private activeStreamState: UIMessageStreamState<UI_MESSAGE> | undefined
   private requestSequence = 0
 
   constructor(init: ChatOptions<UI_MESSAGE>) {
@@ -245,6 +246,13 @@ export class Chat<UI_MESSAGE extends UIMessage = UIMessage> {
       parts: lastMessage.parts.map(updatePart),
     })
 
+    // 同步更新流处理器的工作副本：后续 chunk 的渲染通知以它为准，
+    // 否则输出状态会被下一个 chunk 的快照覆盖回 input-available（对齐 AI SDK activeResponse 语义）
+    const active = this.activeStreamState
+    if (active) {
+      active.message = { ...active.message, parts: active.message.parts.map(updatePart) }
+    }
+
     if (
       this.status !== 'streaming' &&
       this.status !== 'submitted' &&
@@ -313,7 +321,10 @@ export class Chat<UI_MESSAGE extends UIMessage = UIMessage> {
     const streamState: UIMessageStreamState<UI_MESSAGE> = {
       message: { id: generateId(), role: 'assistant', parts: [] } as unknown as UI_MESSAGE,
     }
+    this.activeStreamState = streamState
     this.setStatus({ status: 'submitted' })
+    // 快照请求消息（不含本轮 assistant 占位消息，对齐 AI SDK 线协议）
+    const requestMessages = [...this.state.messages]
     this.state.pushMessage(streamState.message)
     const messageIndex = this.state.messages.length - 1
     const notifyUpdate = () => this.state.replaceMessage(messageIndex, streamState.message)
@@ -324,7 +335,7 @@ export class Chat<UI_MESSAGE extends UIMessage = UIMessage> {
     try {
       const chunkStream = await this.transport.sendMessages({
         id: this.id,
-        messages: this.state.messages,
+        messages: requestMessages,
         trigger,
         messageId,
         body,
@@ -374,6 +385,9 @@ export class Chat<UI_MESSAGE extends UIMessage = UIMessage> {
       } finally {
         if (this.activeAbortController === abortController) {
           this.activeAbortController = undefined
+        }
+        if (this.activeStreamState === streamState) {
+          this.activeStreamState = undefined
         }
       }
     }
