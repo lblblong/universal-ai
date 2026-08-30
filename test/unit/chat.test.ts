@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { Chat } from '../../src/chat/chat'
 import { lastAssistantMessageIsCompleteWithToolCalls } from '../../src/chat/last-assistant-message-is-complete-with-tool-calls'
 import { createLocalHistoryAdapter, createServerHistoryAdapter, type ChatAdapter } from '../../src/adapter'
+import { DefaultChatTransport } from '../../src/transport/http-chat-transport'
 import type { UIMessageChunk } from '../../src/types/chunk'
 import type { UIMessage } from '../../src/types/message'
 import { mockFetch, sseResponse, streamingSseResponse, textStreamChunks } from '../helpers/sse'
@@ -115,14 +116,52 @@ describe('Chat 工具回路', () => {
 
     expect(toolCalls).toEqual([{ toolCallId: 'call-1', toolName: 'get_weather', input: { city: '北京' } }])
     expect(requests).toHaveLength(2)
-    // 第二轮请求带上工具输出
+    // 第二轮请求带上工具输出，且仍是同一条 assistant（不另开新消息）
     const secondMessages = requests[1].body.messages as UIMessage[]
+    expect(secondMessages.filter((m) => m.role === 'assistant')).toHaveLength(1)
     const assistantWithTool = secondMessages.find((m) => m.role === 'assistant')
     expect(assistantWithTool?.parts.some((p) => (p as any).state === 'output-available')).toBe(true)
-    // 最终回复是新的 assistant 消息
-    expect(chat.messages).toHaveLength(3)
-    expect(chat.messages[2].parts.some((p) => p.type === 'text' && (p as any).text === '北京今天35度，晴')).toBe(true)
+    expect(chat.messages).toHaveLength(2)
+    expect(chat.messages.filter((m) => m.role === 'assistant')).toHaveLength(1)
+    expect(chat.messages[1].parts.some((p) => p.type === 'text' && (p as any).text === '北京今天35度，晴')).toBe(true)
+    expect(chat.messages[1].parts.some((p) => (p as any).state === 'output-available')).toBe(true)
     expect(chat.status).toBe('ready')
+  })
+
+  it('多步工具续跑：追加到同一条 assistant，第二轮请求只有一条 assistant', async () => {
+    const secondTool: UIMessageChunk[] = [
+      { type: 'start', messageId: 'a1' },
+      { type: 'start-step' },
+      { type: 'tool-input-available', toolCallId: 'call-2', toolName: 'apply_app_form', input: { title: '塗鴉' } },
+      { type: 'finish-step' },
+      { type: 'finish', finishReason: 'tool-calls' },
+    ]
+    const { fetch, requests } = mockFetch([
+      sseResponse(toolTurn),
+      sseResponse(secondTool),
+      sseResponse(textStreamChunks('已填好表单')),
+    ])
+    const chat = new Chat({
+      api: '/api/chat',
+      fetch,
+      sendAutomaticallyWhen: AUTO_SUBMIT,
+      onToolCall: ({ toolCall }) => {
+        void chat.addToolOutput({ toolCallId: toolCall.toolCallId, output: { ok: true } })
+      },
+    })
+
+    await chat.sendMessage({ text: '做一个 app' })
+
+    expect(requests).toHaveLength(3)
+    expect(chat.messages).toHaveLength(2)
+    const assistant = chat.messages[1]
+    expect(assistant.parts.filter((p) => p.type === 'step-start')).toHaveLength(3)
+    expect(assistant.parts.filter((p) => (p as any).state === 'output-available')).toHaveLength(2)
+    expect(assistant.parts.some((p) => p.type === 'text' && (p as any).text === '已填好表单')).toBe(true)
+    // 第三轮请求：历史里仍然只有一条 assistant，且带着前两步的工具结果
+    const lastReq = requests[2].body.messages as UIMessage[]
+    expect(lastReq.filter((m) => m.role === 'assistant')).toHaveLength(1)
+    expect(lastReq.find((m) => m.role === 'assistant')?.parts.filter((p) => (p as any).state === 'output-available')).toHaveLength(2)
   })
 
   it('多工具：两个输出都补齐后才续跑', async () => {
@@ -196,7 +235,7 @@ describe('Chat 工具回路', () => {
     })
     await chat.sendMessage({ text: 'hi' })
     expect(chat.status).toBe('ready')
-    expect(chat.messages).toHaveLength(3)
+    expect(chat.messages).toHaveLength(2)
   })
 })
 
@@ -261,6 +300,33 @@ describe('Chat 中断与错误', () => {
 })
 
 describe('Chat 会话适配器', () => {
+  it('adapter.prepareMessages 存在时，transport body 的 model/tools 仍并入请求', async () => {
+    const { fetch, requests } = mockFetch([sseResponse(textStreamChunks('ok'))])
+    const tools = [
+      {
+        type: 'function',
+        function: { name: 'get_app_form', description: '读取表单', parameters: { type: 'object' } },
+      },
+    ]
+    const chat = new Chat({
+      api: '/api/chat',
+      fetch,
+      adapter: {
+        persistSession: true,
+        prepareMessages: (messages) => [
+          { id: 'turn-instructions', role: 'system', parts: [{ type: 'text', text: '必须用 tool 改表' }] },
+          ...messages,
+        ],
+      },
+      body: () => ({ model: 'mimo-v2.5', tools }),
+    })
+    await chat.sendMessage({ text: '填表' })
+    expect(requests[0].body.model).toBe('mimo-v2.5')
+    expect(requests[0].body.tools).toEqual(tools)
+    expect(requests[0].body.messages[0]).toMatchObject({ id: 'turn-instructions', role: 'system' })
+    expect(requests[0].body.messages[1].parts[0].text).toBe('填表')
+  })
+
   it('createServerHistoryAdapter：请求只带最后一条消息', async () => {
     const { fetch, requests } = mockFetch([
       sseResponse(textStreamChunks('第一轮')),
@@ -392,5 +458,33 @@ describe('lastAssistantMessageIsCompleteWithToolCalls', () => {
         ],
       }),
     ).toBe(true)
+  })
+})
+
+describe('DefaultChatTransport body 合并', () => {
+  it('prepareSendMessagesRequest 收到的 body 已含 transport.body', async () => {
+    const { fetch, requests } = mockFetch([sseResponse(textStreamChunks('ok'))])
+    const seen: unknown[] = []
+    const transport = new DefaultChatTransport({
+      api: '/api/chat',
+      fetch,
+      body: () => ({ model: 'mimo-v2.5', tools: [{ type: 'function', function: { name: 'apply_app_form' } }] }),
+      prepareSendMessagesRequest: ({ id, messages, trigger, messageId, body }) => {
+        seen.push(body)
+        return {
+          body: { id, messages, trigger, messageId, ...body },
+        }
+      },
+    })
+    await transport.sendMessages({
+      id: 'c1',
+      messages: [{ id: 'u1', role: 'user', parts: [{ type: 'text', text: 'hi' }] }],
+      trigger: 'submit-message',
+      messageId: 'u1',
+    })
+    expect(seen[0]).toMatchObject({ model: 'mimo-v2.5' })
+    expect((seen[0] as { tools: Array<{ function: { name: string } }> }).tools[0].function.name).toBe('apply_app_form')
+    expect(requests[0].body.model).toBe('mimo-v2.5')
+    expect(requests[0].body.tools[0].function.name).toBe('apply_app_form')
   })
 })

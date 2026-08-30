@@ -89,29 +89,33 @@ export class DefaultChatTransport<UI_MESSAGE extends UIMessage = UIMessage>
     const transportBody = (await resolveResolvable(this.body)) ?? {}
     const transportCredentials = await resolveResolvable(this.credentials)
     const requestHeaders = headersToObject(options.headers)
+    // 对齐 AI SDK：transport.body 与单次 send 的 body 先合并，再交给 prepare。
+    // 否则自定义 prepareSendMessagesRequest 时 model/tools 会被整包丢掉。
+    const mergedBody = { ...transportBody, ...options.body }
+    const baseHeaders = { ...transportHeaders, ...requestHeaders }
+    const credentials = options.credentials ?? transportCredentials
 
     const prepared = this.prepareSendMessagesRequest
       ? await this.prepareSendMessagesRequest({
           id: options.id,
           messages: options.messages,
-          body: options.body,
-          credentials: options.credentials ?? transportCredentials,
-          headers: { ...transportHeaders, ...requestHeaders },
+          body: mergedBody,
+          credentials,
+          headers: baseHeaders,
           api: this.api,
           trigger: options.trigger,
           messageId: options.messageId,
         })
       : {
           body: {
+            ...mergedBody,
             id: options.id,
             trigger: options.trigger,
             messageId: options.messageId,
             messages: options.messages,
-            ...transportBody,
-            ...options.body,
           },
-          headers: { ...transportHeaders, ...requestHeaders },
-          credentials: options.credentials ?? transportCredentials,
+          headers: baseHeaders,
+          credentials,
         }
 
     const response = await (options.fetch ?? this.fetchImpl)(prepared.api ?? this.api, {

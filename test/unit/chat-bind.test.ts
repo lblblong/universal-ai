@@ -145,9 +145,9 @@ describe('注入数组契约（messages 选项）', () => {
     await chat.sendMessage({ text: '北京天气' })
 
     expect(requests).toHaveLength(2)
-    expect(bound).toHaveLength(3)
+    expect(bound).toHaveLength(2)
     expect(bound[1].parts.some((p) => (p as any).state === 'output-available')).toBe(true)
-    expect(assistantText(bound[2])).toBe('北京35度')
+    expect(assistantText(bound[1])).toBe('北京35度')
     expect(chat.messages).toBe(bound)
   })
 

@@ -239,10 +239,10 @@ suite('OpenCode Go 真实 API 集成', () => {
     expect(chat.status).toBe('ready')
     expect(chat.messages).toBe(bound)
     expect(upstreamCalls.length).toBeGreaterThanOrEqual(2)
-    // 消息数组：user → assistant(带工具输出) → assistant(最终回答)
-    expect(bound).toHaveLength(3)
+    // 消息数组：user → 同一条 assistant（工具输出 + 最终回答追加为后续 step）
+    expect(bound).toHaveLength(2)
     expect(bound[1].parts.some((p) => (p as any).state === 'output-available')).toBe(true)
-    const finalText = bound[2].parts
+    const finalText = bound[1].parts
       .filter((p) => p.type === 'text')
       .map((p) => (p as any).text)
       .join('')

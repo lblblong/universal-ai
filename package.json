@@ -1,6 +1,6 @@
 {
   "name": "universal-ai",
-  "version": "3.0.1",
+  "version": "3.0.3",
   "type": "module",
   "main": "dist/index.mjs",
   "typings": "dist/index.d.mts",
@@ -20,7 +20,8 @@
     "prepublishOnly": "tsdown",
     "typecheck": "tsc --noEmit",
     "test": "NODE_USE_ENV_PROXY=1 vitest run",
-    "test:watch": "NODE_USE_ENV_PROXY=1 vitest"
+    "test:watch": "NODE_USE_ENV_PROXY=1 vitest",
+    "test:app-form": "NODE_USE_ENV_PROXY=1 vitest run --config vitest.probe.config.ts"
   },
   "engines": {
     "node": ">=22"

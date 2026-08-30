@@ -103,23 +103,6 @@ export class Chat<UI_MESSAGE extends UIMessage = UIMessage> {
         headers,
         body,
         fetch,
-        prepareSendMessagesRequest: adapter?.prepareMessages
-          ? ({ id, messages, trigger, messageId, body: requestBody, headers: requestHeaders, credentials, api: requestApi }) => ({
-              body: {
-                id,
-                ...requestBody,
-                messages: adapter.prepareMessages!(messages, {
-                  trigger,
-                  messageId,
-                }),
-                trigger,
-                messageId,
-              },
-              headers: requestHeaders,
-              credentials,
-              api: requestApi,
-            })
-          : undefined,
       })
 
     this.id = rest.id ?? generateId()
@@ -334,14 +317,24 @@ export class Chat<UI_MESSAGE extends UIMessage = UIMessage> {
     const abortController = new AbortController()
     this.activeAbortController = abortController
 
+    // 对齐 AI SDK：上一条已是 assistant（工具续跑）时复用同一条消息追加 step，
+    // 不要再 push 一条新 assistant——否则历史变成多条同 id 的 assistant，
+    // 模型会把已完成的工具调用当成没发生过。
+    const last = this.lastMessage
+    const reuseAssistant = last?.role === 'assistant'
     const streamState: UIMessageStreamState<UI_MESSAGE> = {
-      message: { id: generateId(), role: 'assistant', parts: [] } as unknown as UI_MESSAGE,
+      message: reuseAssistant
+        ? ({ ...last, parts: last.parts.map((part) => ({ ...part })) } as UI_MESSAGE)
+        : ({ id: generateId(), role: 'assistant', parts: [] } as unknown as UI_MESSAGE),
     }
     this.activeStreamState = streamState
     this.setStatus({ status: 'submitted' })
-    // 快照请求消息（不含本轮 assistant 占位消息，对齐 AI SDK 线协议）
+    // 快照请求消息：续跑时包含当前 assistant（已带 tool output）；首轮不含占位 assistant
     const requestMessages = [...this.state.messages]
-    this.state.pushMessage(streamState.message)
+    const outboundMessages = this.adapter?.prepareMessages
+      ? this.adapter.prepareMessages(requestMessages, { trigger, messageId })
+      : requestMessages
+    if (!reuseAssistant) this.state.pushMessage(streamState.message)
     const messageIndex = this.state.messages.length - 1
     // 交付快照：每次通知交付一份新对象（消息 + parts + part 逐层浅拷贝），
     // 库在交付后不再改动它——消费者拿到的引用是稳定的不可变快照
@@ -357,7 +350,7 @@ export class Chat<UI_MESSAGE extends UIMessage = UIMessage> {
     try {
       const chunkStream = await this.transport.sendMessages({
         id: this.id,
-        messages: requestMessages,
+        messages: outboundMessages,
         trigger,
         messageId,
         body,
