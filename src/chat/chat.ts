@@ -15,6 +15,7 @@ import type {
 } from '../types/chat'
 import { isToolUIPart, type UIMessage, type UIMessagePart } from '../types/message'
 import { generateId } from '../utils/id'
+import { InjectedArrayState } from './injected-array-state'
 import { UniversalChatState } from './chat-state'
 
 export interface ChatOptions<UI_MESSAGE extends UIMessage = UIMessage>
@@ -26,6 +27,13 @@ export interface ChatOptions<UI_MESSAGE extends UIMessage = UIMessage>
   fetch?: typeof globalThis.fetch
   adapter?: ChatAdapter<UI_MESSAGE>
   onStatusChange?: (status: ChatStatus) => void
+  /**
+   * 注入（响应式）数组：Chat 直接在其上 push / 单条赋值实现增量更新，
+   * hydrate 原位填充绝不更换引用。组件用 message.id 作 key 渲染即可只刷新活动消息。
+   */
+  messages?: UI_MESSAGE[]
+  /** 初始消息种子（未注入数组时作为初始历史；注入时原位填充） */
+  initialMessages?: UI_MESSAGE[]
   /** 自定义状态实现；缺省用 UniversalChatState（onMessagesChange → adapter.save） */
   state?: ChatState<UI_MESSAGE>
   /** 自定义传输；缺省用 DefaultChatTransport */
@@ -67,18 +75,27 @@ export class Chat<UI_MESSAGE extends UIMessage = UIMessage> {
       body,
       fetch,
       onStatusChange,
+      messages: injectedMessages,
+      initialMessages,
       state: customState,
       transport,
       ...rest
     } = init
 
     this.adapter = adapter
+    this.initialMessages = initialMessages
     this.state =
       customState ??
-      new UniversalChatState<UI_MESSAGE>({
-        onMessagesChange: (messages) => adapter?.save?.(messages),
-        onStatusChange,
-      })
+      (injectedMessages
+        ? new InjectedArrayState<UI_MESSAGE>({
+            messages: injectedMessages,
+            onStatusChange,
+            onMessagesChange: (messages) => adapter?.save?.(messages),
+          })
+        : new UniversalChatState<UI_MESSAGE>({
+            onMessagesChange: (messages) => adapter?.save?.(messages),
+            onStatusChange,
+          }))
     this.transport =
       transport ??
       new DefaultChatTransport<UI_MESSAGE>({
@@ -110,7 +127,6 @@ export class Chat<UI_MESSAGE extends UIMessage = UIMessage> {
     this.onToolCall = onToolCall
     this.onFinish = rest.onFinish
     this.sendAutomaticallyWhen = rest.sendAutomaticallyWhen
-    this.initialMessages = rest.messages
 
     this.ready = this.hydrate()
   }
@@ -327,7 +343,13 @@ export class Chat<UI_MESSAGE extends UIMessage = UIMessage> {
     const requestMessages = [...this.state.messages]
     this.state.pushMessage(streamState.message)
     const messageIndex = this.state.messages.length - 1
-    const notifyUpdate = () => this.state.replaceMessage(messageIndex, streamState.message)
+    // 交付快照：每次通知交付一份新对象（消息 + parts + part 逐层浅拷贝），
+    // 库在交付后不再改动它——消费者拿到的引用是稳定的不可变快照
+    const notifyUpdate = () =>
+      this.state.replaceMessage(messageIndex, {
+        ...streamState.message,
+        parts: streamState.message.parts.map((part) => ({ ...part })),
+      } as UI_MESSAGE)
 
     let isError = false
     let isAbort = false

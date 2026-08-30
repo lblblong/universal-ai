@@ -46,7 +46,6 @@ export interface ChatRequestOptions {
 export interface ChatInit<UI_MESSAGE extends UIMessageType> {
   /** 会话唯一标识，未提供时自动生成 */
   id?: string
-  messages?: UI_MESSAGE[]
   transport?: ChatTransport<UI_MESSAGE>
   onError?: ChatOnErrorCallback
   onToolCall?: ChatOnToolCallCallback

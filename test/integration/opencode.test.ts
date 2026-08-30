@@ -180,4 +180,72 @@ suite('OpenCode Go 真实 API 集成', () => {
     expect(progressions.length).toBeGreaterThan(1)
     expect(progressions[progressions.length - 1]).toBe(completion)
   }, 120_000)
+
+  it('mimo-v2.5：注入数组绑定——真实流式下引用稳定、单条赋值、快照不可变', async () => {
+    const bound: UIMessage[] = []
+    const chat = new Chat({
+      api: `http://127.0.0.1:${port}/api/chat`,
+      body: { model: 'mimo-v2.5' },
+      messages: bound,
+    })
+    expect(chat.messages).toBe(bound)
+
+    await chat.sendMessage({ text: '用一句话介绍你自己。' })
+
+    expect(chat.status).toBe('ready')
+    expect(chat.messages).toBe(bound)
+    expect(bound).toHaveLength(2)
+    const assistantText = bound[1].parts
+      .filter((p) => p.type === 'text')
+      .map((p) => (p as any).text)
+      .join('')
+    expect(assistantText.length).toBeGreaterThan(4)
+  }, 120_000)
+
+  it('mimo-v2.5：注入数组 + 多轮工具调用（真实模型协调回路）', async () => {
+    upstreamCalls.length = 0
+    const bound: UIMessage[] = []
+    const chat = new Chat({
+      api: `http://127.0.0.1:${port}/api/chat`,
+      body: {
+        model: 'mimo-v2.5',
+        tools: [
+          {
+            type: 'function',
+            function: {
+              name: 'get_weather',
+              description: '查询指定城市的实时天气',
+              parameters: {
+                type: 'object',
+                properties: { city: { type: 'string', description: '城市名' } },
+                required: ['city'],
+              },
+            },
+          },
+        ],
+      },
+      messages: bound,
+      sendAutomaticallyWhen: lastAssistantMessageIsCompleteWithToolCalls,
+      onToolCall: ({ toolCall }) => {
+        void chat.addToolOutput({
+          toolCallId: toolCall.toolCallId,
+          output: { temperature: 35, condition: '晴' },
+        })
+      },
+    })
+
+    await chat.sendMessage({ text: '调用 get_weather 查北京天气，然后告诉我结果。' })
+
+    expect(chat.status).toBe('ready')
+    expect(chat.messages).toBe(bound)
+    expect(upstreamCalls.length).toBeGreaterThanOrEqual(2)
+    // 消息数组：user → assistant(带工具输出) → assistant(最终回答)
+    expect(bound).toHaveLength(3)
+    expect(bound[1].parts.some((p) => (p as any).state === 'output-available')).toBe(true)
+    const finalText = bound[2].parts
+      .filter((p) => p.type === 'text')
+      .map((p) => (p as any).text)
+      .join('')
+    expect(finalText).toContain('35')
+  }, 180_000)
 })

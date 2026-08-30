@@ -295,6 +295,7 @@ describe('Chat 会话适配器', () => {
     await chat.sendMessage({ text: '第二问' })
     // 第二轮请求带全量历史（user/assistant/user）
     expect(requests[1].body.messages).toHaveLength(3)
+    await waitFor(20) // 等 trailing 批量 flush
     expect(saved.length).toBeGreaterThan(0)
     // 防抖结束后最后一份包含完整 4 条
     await waitFor(260)
