@@ -55,7 +55,23 @@ export type StaticToolUIPart = {
 
 export type ToolUIPart = DynamicToolUIPart | StaticToolUIPart
 
-export type UIMessagePart = TextUIPart | StepStartUIPart | ToolUIPart
+/**
+ * 文件部件：对齐 AI SDK 的 FileUIPart。
+ * universal-ai 的流处理器不消费 file 部件，但消息可以携带它直传给服务端处理
+ * （如图片输入）。
+ */
+export type FileUIPart = {
+  type: 'file'
+  /** 完整 IANA 类型（image/png）或顶层段（image） */
+  mediaType: string
+  filename?: string
+  /** 文件 URL（托管地址或 Data URL） */
+  url: string
+  /** 上传文件后各 provider 的引用映射 */
+  providerReference?: Record<string, string>
+}
+
+export type UIMessagePart = TextUIPart | StepStartUIPart | ToolUIPart | FileUIPart
 
 export interface UIMessage {
   id: string

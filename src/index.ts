@@ -48,6 +48,7 @@ export type {
   TextUIPart,
   StepStartUIPart,
   ToolUIPart,
+  FileUIPart,
   DynamicToolUIPart,
   StaticToolUIPart,
   ToolUIPartState,
