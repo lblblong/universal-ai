@@ -1,6 +1,6 @@
 {
   "name": "universal-ai",
-  "version": "3.0.3",
+  "version": "3.0.4",
   "type": "module",
   "main": "dist/index.mjs",
   "typings": "dist/index.d.mts",
