@@ -13,6 +13,19 @@ export type TextUIPart = {
   state?: 'streaming' | 'done'
 }
 
+/**
+ * 思考 / 推理部件。对齐 AI SDK ReasoningUIPart：
+ * reasoning-start → { type: 'reasoning', state: 'streaming' }，
+ * reasoning-delta 累积 text，reasoning-end 后 state 为 'done'。
+ */
+export type ReasoningUIPart = {
+  type: 'reasoning'
+  /** 与流里 reasoning-start/delta/end 的 id 对应 */
+  id?: string
+  text: string
+  state?: 'streaming' | 'done'
+}
+
 export type StepStartUIPart = {
   type: 'step-start'
 }
@@ -71,7 +84,7 @@ export type FileUIPart = {
   providerReference?: Record<string, string>
 }
 
-export type UIMessagePart = TextUIPart | StepStartUIPart | ToolUIPart | FileUIPart
+export type UIMessagePart = TextUIPart | ReasoningUIPart | StepStartUIPart | ToolUIPart | FileUIPart
 
 export interface UIMessage {
   id: string
@@ -82,6 +95,11 @@ export interface UIMessage {
 /** 判断部件是否为工具部件（静态或动态），并收窄类型 */
 export function isToolUIPart(part: UIMessagePart): part is ToolUIPart {
   return part.type === 'dynamic-tool' || part.type.startsWith('tool-')
+}
+
+/** 判断部件是否为思考块 */
+export function isReasoningUIPart(part: UIMessagePart): part is ReasoningUIPart {
+  return part.type === 'reasoning'
 }
 
 /** 取工具部件的工具名（静态形状从 type 推导） */

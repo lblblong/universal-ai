@@ -59,6 +59,35 @@ describe('Chat 基础对话', () => {
     expect(arg.isError).toBe(false)
   })
 
+  it('思考块归约进 assistant.parts，可被 UI 按 type=reasoning 渲染', async () => {
+    const chunks: UIMessageChunk[] = [
+      { type: 'start', messageId: 'm1' },
+      { type: 'start-step' },
+      { type: 'reasoning-start', id: 'reasoning-0' },
+      { type: 'reasoning-delta', id: 'reasoning-0', delta: 'The user wants to' },
+      { type: 'reasoning-delta', id: 'reasoning-0', delta: ' create an app' },
+      { type: 'reasoning-end', id: 'reasoning-0' },
+      { type: 'tool-input-start', toolCallId: 'call1', toolName: 'get_app_form' },
+      { type: 'tool-input-delta', toolCallId: 'call1', inputTextDelta: '{}' },
+      { type: 'tool-input-available', toolCallId: 'call1', toolName: 'get_app_form', input: {} },
+      { type: 'finish-step' },
+      { type: 'finish', finishReason: 'tool-calls' },
+    ]
+    const { fetch } = mockFetch([sseResponse(chunks)])
+    const chat = new Chat({ api: '/api/chat', fetch })
+    await chat.sendMessage({ text: '做个应用' })
+
+    const assistant = chat.messages[1]
+    const reasoning = assistant.parts.find((p) => p.type === 'reasoning')
+    expect(reasoning).toMatchObject({
+      type: 'reasoning',
+      id: 'reasoning-0',
+      text: 'The user wants to create an app',
+      state: 'done',
+    })
+    expect(assistant.parts.some((p) => p.type === 'tool-get_app_form')).toBe(true)
+  })
+
   it('流式期间重复 sendMessage 被忽略（重入保护）', async () => {
     const { fetch, requests } = mockFetch([
       streamingSseResponse(textStreamChunks('长回复...')),

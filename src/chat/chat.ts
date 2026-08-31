@@ -416,7 +416,9 @@ export class Chat<UI_MESSAGE extends UIMessage = UIMessage> {
     } finally {
       // 流中断时 processor 的 flush 不保证执行，这里统一收敛悬挂状态
       for (const part of streamState.message.parts) {
-        if (part.type === 'text' && part.state === 'streaming') part.state = 'done'
+        if ((part.type === 'text' || part.type === 'reasoning') && part.state === 'streaming') {
+          part.state = 'done'
+        }
       }
       notifyUpdate()
       try {

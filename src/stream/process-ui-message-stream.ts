@@ -1,5 +1,13 @@
 import type { UIMessageChunk } from '../types/chunk'
-import { getToolName, type StaticToolUIPart, type TextUIPart, type ToolUIPart, type UIMessage, type UIMessagePart } from '../types/message'
+import {
+  getToolName,
+  type ReasoningUIPart,
+  type StaticToolUIPart,
+  type TextUIPart,
+  type ToolUIPart,
+  type UIMessage,
+  type UIMessagePart,
+} from '../types/message'
 
 /**
  * 流处理器的可变状态：当前 assistant 消息 + 活动部件的索引。
@@ -32,11 +40,34 @@ function isToolPart(part: UIMessagePart): part is ToolUIPart {
   return part.type === 'dynamic-tool' || part.type.startsWith('tool-')
 }
 
+function upsertActivePart<T extends TextUIPart | ReasoningUIPart>(
+  map: Map<string, T>,
+  parts: UIMessagePart[],
+  id: string,
+  create: () => T,
+): T {
+  let part = map.get(id)
+  if (!part) {
+    part = create()
+    map.set(id, part)
+    parts.push(part)
+  }
+  return part
+}
+
+function closeActivePart<T extends { state?: 'streaming' | 'done' }>(map: Map<string, T>, id: string) {
+  const part = map.get(id)
+  if (part) {
+    part.state = 'done'
+    map.delete(id)
+  }
+}
+
 /**
  * 把 UI message stream 的 chunk 归约进 state.message。
  * 返回直通流，便于上层同时观察原始 chunk（如统计/调试）。
  *
- * 容错策略：text-delta 先于 text-start 到达时自动补开 text part；
+ * 容错策略：text/reasoning-delta 先于对应 *-start 到达时自动补开 part；
  * 未知 chunk 静默忽略（通过 onUnknownChunk 观测）。
  */
 export function processUIMessageStream<UI_MESSAGE extends UIMessage>(
@@ -44,20 +75,11 @@ export function processUIMessageStream<UI_MESSAGE extends UIMessage>(
 ): TransformStream<UIMessageChunk, UIMessageChunk> {
   const { state, onToolCall, onUnknownChunk } = options
   const activeTextParts = new Map<string, TextUIPart>()
+  const activeReasoningParts = new Map<string, ReasoningUIPart>()
   const pendingToolInputs = new Map<string, string>()
 
   const findPartIndex = (predicate: (part: UIMessagePart) => boolean) =>
     state.message.parts.findIndex(predicate)
-
-  const upsertTextPart = (id: string, create: () => TextUIPart): TextUIPart => {
-    let part = activeTextParts.get(id)
-    if (!part) {
-      part = create()
-      activeTextParts.set(id, part)
-      state.message.parts.push(part)
-    }
-    return part
-  }
 
   const findToolPart = (toolCallId: string): ToolUIPart | undefined => {
     for (const part of state.message.parts) {
@@ -102,23 +124,54 @@ export function processUIMessageStream<UI_MESSAGE extends UIMessage>(
         }
 
         case 'text-start': {
-          upsertTextPart(chunk.id, () => ({ type: 'text', text: '', state: 'streaming' }))
+          upsertActivePart(activeTextParts, state.message.parts, chunk.id, () => ({
+            type: 'text',
+            text: '',
+            state: 'streaming',
+          }))
           break
         }
 
         case 'text-delta': {
           // 容错：正常协议里 text-start 先行；缺失时自动补开，避免丢字
-          const part = upsertTextPart(chunk.id, () => ({ type: 'text', text: '', state: 'streaming' }))
+          const part = upsertActivePart(activeTextParts, state.message.parts, chunk.id, () => ({
+            type: 'text',
+            text: '',
+            state: 'streaming',
+          }))
           part.text += chunk.delta
           break
         }
 
         case 'text-end': {
-          const part = activeTextParts.get(chunk.id)
-          if (part) {
-            part.state = 'done'
-            activeTextParts.delete(chunk.id)
-          }
+          closeActivePart(activeTextParts, chunk.id)
+          break
+        }
+
+        case 'reasoning-start': {
+          upsertActivePart(activeReasoningParts, state.message.parts, chunk.id, () => ({
+            type: 'reasoning',
+            id: chunk.id,
+            text: '',
+            state: 'streaming',
+          }))
+          break
+        }
+
+        case 'reasoning-delta': {
+          // 与 text-delta 同样容错：缺 start 时自动补开，避免丢思考内容
+          const part = upsertActivePart(activeReasoningParts, state.message.parts, chunk.id, () => ({
+            type: 'reasoning',
+            id: chunk.id,
+            text: '',
+            state: 'streaming',
+          }))
+          part.text += chunk.delta
+          break
+        }
+
+        case 'reasoning-end': {
+          closeActivePart(activeReasoningParts, chunk.id)
           break
         }
 
@@ -194,6 +247,8 @@ export function processUIMessageStream<UI_MESSAGE extends UIMessage>(
       // 流意外中断时，把悬挂的 streaming 状态收敛为 done，避免 UI 永久转圈
       for (const part of activeTextParts.values()) part.state = 'done'
       activeTextParts.clear()
+      for (const part of activeReasoningParts.values()) part.state = 'done'
+      activeReasoningParts.clear()
     },
   })
 }

@@ -46,6 +46,7 @@ export type {
   UIMessage,
   UIMessagePart,
   TextUIPart,
+  ReasoningUIPart,
   StepStartUIPart,
   ToolUIPart,
   FileUIPart,
@@ -53,5 +54,5 @@ export type {
   StaticToolUIPart,
   ToolUIPartState,
 } from './types/message'
-export { isToolUIPart, getToolName } from './types/message'
+export { isToolUIPart, isReasoningUIPart, getToolName } from './types/message'
 export { generateId } from './utils/id'
