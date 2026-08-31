@@ -1,6 +1,6 @@
 // Chat：状态机 + 流渲染 + 客户端工具回路
 export { Chat } from './chat/chat'
-export type { ChatOptions } from './chat/chat'
+export type { ChatOptions, ChatTool } from './chat/chat'
 export { UniversalChatState } from './chat/chat-state'
 export { lastAssistantMessageIsCompleteWithToolCalls } from './chat/last-assistant-message-is-complete-with-tool-calls'
 

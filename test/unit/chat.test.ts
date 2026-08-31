@@ -488,3 +488,119 @@ describe('DefaultChatTransport body 合并', () => {
     expect(requests[0].body.tools[0].function.name).toBe('apply_app_form')
   })
 })
+
+describe('Chat instructions', () => {
+  it('请求前注入 system，不写入 chat.messages / adapter.save', async () => {
+    const { fetch, requests } = mockFetch([sseResponse(textStreamChunks('ok'))])
+    const saved: UIMessage[][] = []
+    const chat = new Chat({
+      api: '/api/chat',
+      fetch,
+      instructions: '你是配置助手',
+      adapter: { persistSession: true, save: (messages) => saved.push(messages) },
+    })
+    await chat.sendMessage({ text: '填表' })
+
+    expect(requests[0].body.messages[0]).toMatchObject({
+      id: '__instructions',
+      role: 'system',
+      parts: [{ type: 'text', text: '你是配置助手' }],
+    })
+    expect(requests[0].body.messages[1].parts[0].text).toBe('填表')
+    expect(chat.messages.every((m) => m.role !== 'system')).toBe(true)
+    await waitFor(260)
+    expect(saved.at(-1)?.every((m) => m.role !== 'system')).toBe(true)
+  })
+
+  it('回调在每次请求时求值', async () => {
+    const { fetch, requests } = mockFetch([
+      sseResponse(textStreamChunks('第一轮')),
+      sseResponse(textStreamChunks('第二轮')),
+    ])
+    let tab = 'ask'
+    const chat = new Chat({
+      api: '/api/chat',
+      fetch,
+      instructions: () => `mode:${tab}`,
+    })
+    await chat.sendMessage({ text: '一' })
+    tab = 'agent'
+    await chat.sendMessage({ text: '二' })
+    expect(requests[0].body.messages[0].parts[0].text).toBe('mode:ask')
+    expect(requests[1].body.messages[0].parts[0].text).toBe('mode:agent')
+  })
+})
+
+describe('Chat 一等 tools', () => {
+  const toolTurn: UIMessageChunk[] = [
+    { type: 'start', messageId: 'a1' },
+    { type: 'start-step' },
+    { type: 'tool-input-available', toolCallId: 'call-1', toolName: 'get_weather', input: { city: '北京' } },
+    { type: 'finish-step' },
+    { type: 'finish', finishReason: 'tool-calls' },
+  ]
+
+  it('execute 自动回填并续跑，body 带 OpenAI tools，无需手写 onToolCall', async () => {
+    const { fetch, requests } = mockFetch([sseResponse(toolTurn), sseResponse(textStreamChunks('35度晴'))])
+    const execute = vi.fn(async ({ input }: { input: unknown }) => ({ temperature: 35, city: (input as any).city }))
+    const chat = new Chat({
+      api: '/api/chat',
+      fetch,
+      body: () => ({ model: 'mimo-v2.5' }),
+      tools: {
+        get_weather: {
+          description: '查天气',
+          parameters: { type: 'object', properties: { city: { type: 'string' } } },
+          execute,
+        },
+      },
+    })
+
+    await chat.sendMessage({ text: '北京天气' })
+
+    expect(execute).toHaveBeenCalledWith({
+      input: { city: '北京' },
+      toolCall: { toolCallId: 'call-1', toolName: 'get_weather', input: { city: '北京' } },
+    })
+    expect(requests[0].body.model).toBe('mimo-v2.5')
+    expect(requests[0].body.tools[0].function.name).toBe('get_weather')
+    expect(requests).toHaveLength(2)
+    expect(chat.messages[1].parts.some((p) => (p as any).state === 'output-available')).toBe(true)
+    expect(chat.messages[1].parts.some((p) => p.type === 'text' && (p as any).text === '35度晴')).toBe(true)
+  })
+
+  it('execute 抛错 → output-error 并续跑', async () => {
+    const { fetch, requests } = mockFetch([sseResponse(toolTurn), sseResponse(textStreamChunks('失败了'))])
+    const chat = new Chat({
+      api: '/api/chat',
+      fetch,
+      tools: {
+        get_weather: {
+          description: '查天气',
+          parameters: { type: 'object' },
+          execute: async () => {
+            throw new Error('上游超时')
+          },
+        },
+      },
+    })
+    await chat.sendMessage({ text: '北京天气' })
+    expect(requests).toHaveLength(2)
+    expect(chat.messages[1].parts.some((p) => (p as any).state === 'output-error' && (p as any).errorText === '上游超时')).toBe(true)
+  })
+
+  it('未命中注册表时走用户 onToolCall（WJI 路径不被抢走）', async () => {
+    const { fetch } = mockFetch([sseResponse(toolTurn), sseResponse(textStreamChunks('ok'))])
+    const onToolCall = vi.fn(({ toolCall }) => {
+      void chat.addToolOutput({ toolCallId: toolCall.toolCallId, output: { ok: true } })
+    })
+    const chat = new Chat({
+      api: '/api/chat',
+      fetch,
+      sendAutomaticallyWhen: AUTO_SUBMIT,
+      onToolCall,
+    })
+    await chat.sendMessage({ text: 'hi' })
+    expect(onToolCall).toHaveBeenCalledTimes(1)
+  })
+})

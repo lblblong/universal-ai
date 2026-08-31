@@ -1,6 +1,6 @@
 import type { ChatAdapter } from '../adapter'
 import { processUIMessageStream, type UIMessageStreamState } from '../stream/process-ui-message-stream'
-import { DefaultChatTransport } from '../transport/http-chat-transport'
+import { DefaultChatTransport, resolveResolvable } from '../transport/http-chat-transport'
 import type { Resolvable } from '../transport/http-chat-transport'
 import type {
   ChatInit,
@@ -17,6 +17,20 @@ import { isToolUIPart, type UIMessage, type UIMessagePart } from '../types/messa
 import { generateId } from '../utils/id'
 import { InjectedArrayState } from './injected-array-state'
 import { UniversalChatState } from './chat-state'
+import { lastAssistantMessageIsCompleteWithToolCalls } from './last-assistant-message-is-complete-with-tool-calls'
+
+/** 请求时注入的 instructions 消息 id，不写入会话数组 */
+const INSTRUCTIONS_ID = '__instructions'
+
+export type ChatTool = {
+  description: string
+  /** JSON Schema，作为 OpenAI function.parameters */
+  parameters: Record<string, unknown>
+  execute?: (opts: {
+    input: unknown
+    toolCall: { toolCallId: string; toolName: string; input: unknown }
+  }) => unknown
+}
 
 export interface ChatOptions<UI_MESSAGE extends UIMessage = UIMessage>
   extends ChatInit<UI_MESSAGE> {
@@ -38,15 +52,24 @@ export interface ChatOptions<UI_MESSAGE extends UIMessage = UIMessage>
   state?: ChatState<UI_MESSAGE>
   /** 自定义传输；缺省用 DefaultChatTransport */
   transport?: ChatTransport<UI_MESSAGE>
+  /**
+   * 模型行为说明。每次请求前注入为临时 system 消息，不写入 messages / adapter.save。
+   * 字符串事后可再赋值；回调在发请求时求值（切 tab / 切模式）。
+   */
+  instructions?: string | (() => string)
+  /**
+   * 客户端工具。有 execute 时自动执行并 addToolOutput，且默认自动续跑；
+   * 同时编成 OpenAI function 清单并入请求 body.tools（自定义 transport 时需自行携带）。
+   */
+  tools?: Record<string, ChatTool>
 }
 
 /**
  * 零依赖 Chat 类：状态机 + 流渲染 + 客户端工具回路 + 自动续跑。
  *
  * 与 AI SDK 的 Chat 语义对齐：
- * - onToolCall 在流处理中被 await；回调里不要 await addToolOutput（会互等死锁），
- *   fire-and-forget 调用即可。
- * - addToolOutput / 流结束后都会检查 sendAutomaticallyWhen，决定是否自动续跑。
+ * - 手写 onToolCall 时不要 await addToolOutput（会互等死锁），fire-and-forget 即可。
+ * - 传入 tools.execute 时库内部处理执行与回填，调用方不必碰这条回路。
  * - abort 保留半截消息并把状态收敛回 ready；错误则置为 error 并保留消息。
  */
 export class Chat<UI_MESSAGE extends UIMessage = UIMessage> {
@@ -54,10 +77,15 @@ export class Chat<UI_MESSAGE extends UIMessage = UIMessage> {
   readonly ready: Promise<void>
   readonly adapter?: ChatAdapter<UI_MESSAGE>
 
+  /** 当轮请求注入的说明，不写入 messages / adapter.save */
+  instructions?: string | (() => string)
+  /** 客户端工具；有 execute 时自动跑回路并编进 body.tools */
+  tools?: Record<string, ChatTool>
+
   private state: ChatState<UI_MESSAGE>
   private readonly transport: ChatTransport<UI_MESSAGE>
   private readonly onError?: ChatOnErrorCallback
-  private readonly onToolCall?: ChatOnToolCallCallback
+  private readonly userOnToolCall?: ChatOnToolCallCallback
   private readonly onFinish?: ChatOnFinishCallback<UI_MESSAGE>
   private readonly sendAutomaticallyWhen?: ChatInit<UI_MESSAGE>['sendAutomaticallyWhen']
   private readonly initialMessages?: UI_MESSAGE[]
@@ -79,10 +107,14 @@ export class Chat<UI_MESSAGE extends UIMessage = UIMessage> {
       initialMessages,
       state: customState,
       transport,
+      instructions,
+      tools,
       ...rest
     } = init
 
     this.adapter = adapter
+    this.instructions = instructions
+    this.tools = tools
     this.initialMessages = initialMessages
     this.state =
       customState ??
@@ -101,13 +133,13 @@ export class Chat<UI_MESSAGE extends UIMessage = UIMessage> {
       new DefaultChatTransport<UI_MESSAGE>({
         api,
         headers,
-        body,
+        body: () => this.mergeToolsIntoBody(body),
         fetch,
       })
 
     this.id = rest.id ?? generateId()
     this.onError = rest.onError
-    this.onToolCall = onToolCall
+    this.userOnToolCall = onToolCall
     this.onFinish = rest.onFinish
     this.sendAutomaticallyWhen = rest.sendAutomaticallyWhen
 
@@ -252,11 +284,7 @@ export class Chat<UI_MESSAGE extends UIMessage = UIMessage> {
       active.message = { ...active.message, parts: active.message.parts.map(updatePart) }
     }
 
-    if (
-      this.status !== 'streaming' &&
-      this.status !== 'submitted' &&
-      this.sendAutomaticallyWhen
-    ) {
+    if (this.status !== 'streaming' && this.status !== 'submitted') {
       // 不 await：避免与流处理互等死锁
       void this.maybeAutoSubmit()
     }
@@ -272,8 +300,11 @@ export class Chat<UI_MESSAGE extends UIMessage = UIMessage> {
   }
 
   private async shouldSendAutomatically(): Promise<boolean> {
-    if (!this.sendAutomaticallyWhen) return false
-    const result = this.sendAutomaticallyWhen({ messages: this.state.messages })
+    const fn =
+      this.sendAutomaticallyWhen ??
+      (this.hasExecutableTools() ? lastAssistantMessageIsCompleteWithToolCalls : undefined)
+    if (!fn) return false
+    const result = fn({ messages: this.state.messages })
     if (result && typeof result === 'object' && 'then' in result) {
       return await result
     }
@@ -331,9 +362,10 @@ export class Chat<UI_MESSAGE extends UIMessage = UIMessage> {
     this.setStatus({ status: 'submitted' })
     // 快照请求消息：续跑时包含当前 assistant（已带 tool output）；首轮不含占位 assistant
     const requestMessages = [...this.state.messages]
-    const outboundMessages = this.adapter?.prepareMessages
+    const prepared = this.adapter?.prepareMessages
       ? this.adapter.prepareMessages(requestMessages, { trigger, messageId })
       : requestMessages
+    const outboundMessages = this.applyInstructions(prepared)
     if (!reuseAssistant) this.state.pushMessage(streamState.message)
     const messageIndex = this.state.messages.length - 1
     // 交付快照：每次通知交付一份新对象（消息 + parts + part 逐层浅拷贝），
@@ -363,9 +395,7 @@ export class Chat<UI_MESSAGE extends UIMessage = UIMessage> {
       const processed = chunkStream.pipeThrough(
         processUIMessageStream<UI_MESSAGE>({
           state: streamState,
-          onToolCall: this.onToolCall
-            ? ({ toolCall }) => this.onToolCall!({ toolCall })
-            : undefined,
+          onToolCall: ({ toolCall }) => this.handleToolCall({ toolCall }),
         }),
       )
 
@@ -415,5 +445,89 @@ export class Chat<UI_MESSAGE extends UIMessage = UIMessage> {
         headers,
       })
     }
+  }
+
+  private hasExecutableTools() {
+    const tools = this.tools
+    if (!tools) return false
+    for (const name in tools) {
+      if (tools[name]?.execute) return true
+    }
+    return false
+  }
+
+  private applyInstructions(messages: UI_MESSAGE[]): UI_MESSAGE[] {
+    const rest = messages.filter((m) => m.id !== INSTRUCTIONS_ID)
+    const raw =
+      typeof this.instructions === 'function' ? this.instructions() : this.instructions
+    const text = raw?.trim()
+    if (!text) return rest
+    const system = {
+      id: INSTRUCTIONS_ID,
+      role: 'system' as const,
+      parts: [{ type: 'text' as const, text }],
+    } as UI_MESSAGE
+    return [system, ...rest]
+  }
+
+  private toOpenAITools() {
+    const tools = this.tools
+    if (!tools) return undefined
+    const names = Object.keys(tools)
+    if (!names.length) return undefined
+    return names.map((name) => ({
+      type: 'function' as const,
+      function: {
+        name,
+        description: tools[name].description,
+        parameters: tools[name].parameters,
+      },
+    }))
+  }
+
+  private async mergeToolsIntoBody(userBody?: Resolvable<object>) {
+    const resolved = ((await resolveResolvable(userBody)) ?? {}) as Record<string, unknown>
+    const tools = this.toOpenAITools()
+    return tools ? { ...resolved, tools } : resolved
+  }
+
+  private handleToolCall: ChatOnToolCallCallback = async ({ toolCall }) => {
+    if (!toolCall.toolName || !toolCall.toolCallId) return
+
+    const registered = this.tools?.[toolCall.toolName]
+    if (registered?.execute) {
+      try {
+        const result = await registered.execute({
+          input: toolCall.input,
+          toolCall,
+        })
+        void this.addToolOutput({
+          toolCallId: toolCall.toolCallId,
+          output: result ?? { ok: true },
+        }).catch((error) => this.reportToolOutputError(error))
+      } catch (err) {
+        void this.addToolOutput({
+          toolCallId: toolCall.toolCallId,
+          state: 'output-error',
+          errorText: err instanceof Error ? err.message : String(err),
+        }).catch((error) => this.reportToolOutputError(error))
+      }
+      return
+    }
+
+    if (this.tools && Object.keys(this.tools).length && !registered) {
+      void this.addToolOutput({
+        toolCallId: toolCall.toolCallId,
+        state: 'output-error',
+        errorText: `未注册的工具：${toolCall.toolName}`,
+      }).catch((error) => this.reportToolOutputError(error))
+      return
+    }
+
+    await this.userOnToolCall?.({ toolCall })
+  }
+
+  private reportToolOutputError(error: unknown) {
+    if (this.onError && error instanceof Error) this.onError(error)
   }
 }
