@@ -18,6 +18,20 @@ export type {
   LocalHistoryPersist,
 } from './adapter'
 
+// 流式调度适配器（节流、平滑打字机、按行缓冲）
+export {
+  createThrottleScheduler,
+  createSmoothScheduler,
+  createLineScheduler,
+  createDirectScheduler,
+} from './scheduler'
+export type {
+  StreamScheduler,
+  ThrottleSchedulerOptions,
+  SmoothSchedulerOptions,
+  LineSchedulerOptions,
+} from './scheduler'
+
 // 传输层（自定义端点 / 代理时使用）
 export { DefaultChatTransport } from './transport/http-chat-transport'
 export type { DefaultChatTransportOptions, Resolvable } from './transport/http-chat-transport'

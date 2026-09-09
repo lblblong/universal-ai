@@ -18,6 +18,11 @@ import { generateId } from '../utils/id'
 import { InjectedArrayState } from './injected-array-state'
 import { UniversalChatState } from './chat-state'
 import { lastAssistantMessageIsCompleteWithToolCalls } from './last-assistant-message-is-complete-with-tool-calls'
+import {
+  createDirectScheduler,
+  createThrottleScheduler,
+  type StreamScheduler,
+} from '../scheduler'
 
 /** 请求时注入的 instructions 消息 id，不写入会话数组 */
 const INSTRUCTIONS_ID = '__instructions'
@@ -43,15 +48,13 @@ export interface ChatOptions<UI_MESSAGE extends UIMessage = UIMessage>
   onStatusChange?: (status: ChatStatus) => void
   /**
    * 注入（响应式）数组：Chat 直接在其上 push / 单条赋值实现增量更新，
-   * hydrate 原位填充绝不更换引用。组件用 message.id 作 key 渲染即可只刷新活动消息。
+   * keyed 渲染（message.id 作 key）下只有活动消息组件重渲染。
+   * 提供时内部走 InjectedArrayState，绝不创建独立数组副本。
    */
   messages?: UI_MESSAGE[]
-  /** 初始消息种子（未注入数组时作为初始历史；注入时原位填充） */
   initialMessages?: UI_MESSAGE[]
-  /** 自定义状态实现；缺省用 UniversalChatState（onMessagesChange → adapter.save） */
+  /** 底层状态容器，缺省时自动构建 */
   state?: ChatState<UI_MESSAGE>
-  /** 自定义传输；缺省用 DefaultChatTransport */
-  transport?: ChatTransport<UI_MESSAGE>
   /**
    * 模型行为说明。每次请求前注入为临时 system 消息，不写入 messages / adapter.save。
    * 字符串事后可再赋值；回调在发请求时求值（切 tab / 切模式）。
@@ -62,6 +65,10 @@ export interface ChatOptions<UI_MESSAGE extends UIMessage = UIMessage>
    * 同时编成 OpenAI function 清单并入请求 body.tools（自定义 transport 时需自行携带）。
    */
   tools?: Record<string, ChatTool>
+  /** 消息流更新调度器（默认：50ms 节流） */
+  streamScheduler?: StreamScheduler<UI_MESSAGE>
+  /** 快捷设置调度器节流间隔（ms）。设为 0 则关闭节流 */
+  throttle?: number
 }
 
 /**
@@ -73,10 +80,10 @@ export interface ChatOptions<UI_MESSAGE extends UIMessage = UIMessage>
  * - abort 保留半截消息并把状态收敛回 ready；错误则置为 error 并保留消息。
  */
 export class Chat<UI_MESSAGE extends UIMessage = UIMessage> {
+  /** 会话唯一标识 */
   readonly id: string
   readonly ready: Promise<void>
   readonly adapter?: ChatAdapter<UI_MESSAGE>
-
   /** 当轮请求注入的说明，不写入 messages / adapter.save */
   instructions?: string | (() => string)
   /** 客户端工具；有 execute 时自动跑回路并编进 body.tools */
@@ -84,6 +91,7 @@ export class Chat<UI_MESSAGE extends UIMessage = UIMessage> {
 
   private state: ChatState<UI_MESSAGE>
   private readonly transport: ChatTransport<UI_MESSAGE>
+  private readonly streamScheduler: StreamScheduler<UI_MESSAGE>
   private readonly onError?: ChatOnErrorCallback
   private readonly userOnToolCall?: ChatOnToolCallCallback
   private readonly onFinish?: ChatOnFinishCallback<UI_MESSAGE>
@@ -109,6 +117,8 @@ export class Chat<UI_MESSAGE extends UIMessage = UIMessage> {
       transport,
       instructions,
       tools,
+      streamScheduler,
+      throttle,
       ...rest
     } = init
 
@@ -116,6 +126,11 @@ export class Chat<UI_MESSAGE extends UIMessage = UIMessage> {
     this.instructions = instructions
     this.tools = tools
     this.initialMessages = initialMessages
+    this.streamScheduler =
+      streamScheduler ??
+      (throttle !== undefined && throttle <= 0
+        ? createDirectScheduler<UI_MESSAGE>()
+        : createThrottleScheduler<UI_MESSAGE>({ waitMs: throttle ?? 50 }))
     this.state =
       customState ??
       (injectedMessages
@@ -368,10 +383,11 @@ export class Chat<UI_MESSAGE extends UIMessage = UIMessage> {
     const outboundMessages = this.applyInstructions(prepared)
     if (!reuseAssistant) this.state.pushMessage(streamState.message)
     const messageIndex = this.state.messages.length - 1
-    // 交付快照：每次通知交付一份新对象（消息 + parts + part 逐层浅拷贝），
-    // 库在交付后不再改动它——消费者拿到的引用是稳定的不可变快照
-    const notifyUpdate = () =>
-      this.state.replaceMessage(messageIndex, {
+    this.streamScheduler.reset?.()
+
+    const commit = (msg: UI_MESSAGE) => this.state.replaceMessage(messageIndex, msg)
+    const buildLatestSnapshot = (): UI_MESSAGE =>
+      ({
         ...streamState.message,
         parts: streamState.message.parts.map((part) => ({ ...part })),
       } as UI_MESSAGE)
@@ -400,7 +416,7 @@ export class Chat<UI_MESSAGE extends UIMessage = UIMessage> {
       )
 
       for await (const _chunk of processed) {
-        notifyUpdate()
+        this.streamScheduler.push(buildLatestSnapshot(), commit)
       }
 
       if (isCurrentRequest()) this.setStatus({ status: 'ready' })
@@ -418,7 +434,7 @@ export class Chat<UI_MESSAGE extends UIMessage = UIMessage> {
       for (const part of streamState.message.parts) {
         if (part.type === 'text' && part.state === 'streaming') part.state = 'done'
       }
-      notifyUpdate()
+      this.streamScheduler.flush(buildLatestSnapshot(), commit)
       try {
         this.onFinish?.({
           message: streamState.message,

@@ -55,6 +55,15 @@ export interface ChatInit<UI_MESSAGE extends UIMessageType> {
    * （客户端工具续跑、服务端兜底续跑都靠它驱动）。
    */
   sendAutomaticallyWhen?: (options: { messages: UI_MESSAGE[] }) => boolean | PromiseLike<boolean>
+  /**
+   * 自定义流调度器：负责控制流式更新写入 UI 状态的步调与节奏（如平滑打字机、按行缓冲、节流等）。
+   * 未提供时默认采用 createThrottleScheduler({ waitMs: throttle ?? 50 })。
+   */
+  streamScheduler?: import('../scheduler/types').StreamScheduler<UI_MESSAGE>
+  /**
+   * 快捷节流毫秒数（未提供 streamScheduler 时生效，默认 50ms；传 0 则直通）。
+   */
+  throttle?: number
 }
 
 export interface ChatTransportSendOptions<UI_MESSAGE extends UIMessageType> {
