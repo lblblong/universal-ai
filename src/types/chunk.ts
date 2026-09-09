@@ -2,7 +2,7 @@
  * UI message stream 的 chunk 类型。
  *
  * 这里只定义 universal-ai 实际处理的服务端协议子集（AI SDK toUIMessageStream
- * 会发 27 种 chunk，我们的服务端只用到其中 ~13 种）；遇到未知 chunk 类型时
+ * 会发更多种 chunk，我们的服务端只用到其中一部分）；遇到未知 chunk 类型时
  * 处理器会静默忽略，保证服务端升级新增字段/类型时不炸客户端。
  */
 
@@ -12,6 +12,9 @@ export type UIMessageChunk =
   | { type: 'text-start'; id: string }
   | { type: 'text-delta'; id: string; delta: string }
   | { type: 'text-end'; id: string }
+  | { type: 'reasoning-start'; id: string }
+  | { type: 'reasoning-delta'; id: string; delta: string }
+  | { type: 'reasoning-end'; id: string }
   | {
       type: 'tool-input-start'
       toolCallId: string

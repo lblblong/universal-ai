@@ -21,7 +21,8 @@
     "typecheck": "tsc --noEmit",
     "test": "NODE_USE_ENV_PROXY=1 vitest run",
     "test:watch": "NODE_USE_ENV_PROXY=1 vitest",
-    "test:app-form": "NODE_USE_ENV_PROXY=1 vitest run --config vitest.probe.config.ts"
+    "test:app-form": "NODE_USE_ENV_PROXY=1 vitest run --config vitest.probe.config.ts",
+    "test:reasoning": "NODE_USE_ENV_PROXY=1 vitest run --config vitest.probe.config.ts test/probes/reasoning-stream.test.ts"
   },
   "engines": {
     "node": ">=22"

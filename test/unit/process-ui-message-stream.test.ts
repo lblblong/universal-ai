@@ -132,10 +132,87 @@ describe('processUIMessageStream', () => {
   it('未知 chunk 静默忽略并可观测', async () => {
     const state = makeState()
     const onUnknownChunk = vi.fn()
-    const unknown = { type: 'reasoning-start', id: 'r1' } as unknown as UIMessageChunk
+    const unknown = { type: 'source-url', sourceId: 's1', url: 'https://example.com' } as unknown as UIMessageChunk
     await run([...baseTextChunks.slice(0, 3), unknown, ...baseTextChunks.slice(3)], { state, onUnknownChunk })
     expect(textOf(state.message)).toBe('你好，世界')
     expect(onUnknownChunk).toHaveBeenCalledWith(unknown)
+  })
+
+  it('思考流归约：reasoning parts 累积并完结', async () => {
+    const state = makeState()
+    await run(
+      [
+        { type: 'start', messageId: 'm1' },
+        { type: 'start-step' },
+        { type: 'reasoning-start', id: 'reasoning-0' },
+        { type: 'reasoning-delta', id: 'reasoning-0', delta: 'The user wants to' },
+        { type: 'reasoning-delta', id: 'reasoning-0', delta: ' create an app' },
+        { type: 'reasoning-end', id: 'reasoning-0' },
+        { type: 'tool-input-start', toolCallId: 'call1', toolName: 'get_app_form' },
+        { type: 'tool-input-available', toolCallId: 'call1', toolName: 'get_app_form', input: {} },
+        { type: 'finish-step' },
+        { type: 'finish', finishReason: 'tool-calls' },
+      ],
+      { state },
+    )
+    const reasoning = state.message.parts.filter((p) => p.type === 'reasoning')
+    expect(reasoning).toHaveLength(1)
+    expect(reasoning[0]).toMatchObject({
+      type: 'reasoning',
+      id: 'reasoning-0',
+      text: 'The user wants to create an app',
+      state: 'done',
+    })
+    expect(state.message.parts.map((p) => p.type)).toEqual(['step-start', 'reasoning', 'tool-get_app_form'])
+  })
+
+  it('多段思考各自独立累积', async () => {
+    const state = makeState()
+    await run(
+      [
+        { type: 'reasoning-start', id: 'reasoning-1' },
+        { type: 'reasoning-delta', id: 'reasoning-1', delta: '先想' },
+        { type: 'reasoning-end', id: 'reasoning-1' },
+        { type: 'reasoning-start', id: 'reasoning-2' },
+        { type: 'reasoning-delta', id: 'reasoning-2', delta: '再想' },
+        { type: 'reasoning-end', id: 'reasoning-2' },
+      ],
+      { state },
+    )
+    const reasoning = state.message.parts.filter((p) => p.type === 'reasoning')
+    expect(reasoning.map((p) => (p as { id?: string; text: string }).text)).toEqual(['先想', '再想'])
+    expect(reasoning.map((p) => (p as { id?: string }).id)).toEqual(['reasoning-1', 'reasoning-2'])
+  })
+
+  it('reasoning-delta 先于 reasoning-start 时自动补开 part 不丢内容', async () => {
+    const state = makeState()
+    await run(
+      [
+        { type: 'reasoning-delta', id: 'reasoning-0', delta: '半截' },
+        { type: 'reasoning-delta', id: 'reasoning-0', delta: '思考' },
+        { type: 'reasoning-end', id: 'reasoning-0' },
+      ],
+      { state },
+    )
+    expect(state.message.parts[0]).toMatchObject({
+      type: 'reasoning',
+      id: 'reasoning-0',
+      text: '半截思考',
+      state: 'done',
+    })
+  })
+
+  it('flush 时把悬挂的 streaming 思考收敛为 done', async () => {
+    const state = makeState()
+    await run(
+      [
+        { type: 'reasoning-start', id: 'reasoning-0' },
+        { type: 'reasoning-delta', id: 'reasoning-0', delta: '还在想' },
+        { type: 'finish' },
+      ],
+      { state },
+    )
+    expect(state.message.parts[0]).toMatchObject({ type: 'reasoning', text: '还在想', state: 'done' })
   })
 
   it('服务端工具输出 chunk 更新部件状态', async () => {

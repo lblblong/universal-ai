@@ -1,5 +1,6 @@
 import type { UIMessage } from './types/message'
 import type { ChatSendTrigger } from './types/chat'
+import { toPlainSnapshot } from './utils/plain-snapshot'
 
 export type { ChatSendTrigger }
 
@@ -71,7 +72,11 @@ export function createLocalHistoryAdapter<
     },
     save: (messages) => {
       if (saveTimer) clearTimeout(saveTimer)
-      saveTimer = setTimeout(() => flushSave(messages), 200)
+      // 调用时刻立即做快照：flush 是 200ms 后的宏任务，期间消费者可能清空 / 替换
+      // 数组（切换会话），活引用会把彼时的内容写进本会话槽位造成串台；
+      // toPlainSnapshot 同时解开响应式代理，否则 IndexedDB 结构化克隆会静默失败
+      const snapshot = toPlainSnapshot(messages)
+      saveTimer = setTimeout(() => flushSave(snapshot as UI_MESSAGE[]), 200)
     },
     prepareMessages: (messages) => messages,
   }
@@ -112,6 +117,15 @@ async function readIndexedDb<T>(key: string): Promise<T | undefined> {
 }
 
 async function writeIndexedDb(key: string, value: unknown) {
+  // 先独立做结构化克隆：数据不可克隆（函数 / class 实例等）是数据缺陷，
+  // 必须暴露而非静默吞掉——否则表现为「历史悄悄丢失」，无从排查
+  try {
+    value = structuredClone(value)
+  } catch (err) {
+    console.error(`[universal-ai] 聊天历史序列化失败，本次保存已跳过（key: ${key}）`, err)
+    return
+  }
+
   try {
     const db = await openIndexedDb()
     await new Promise<void>((resolve, reject) => {
@@ -121,6 +135,6 @@ async function writeIndexedDb(key: string, value: unknown) {
       req.onerror = () => reject(req.error)
     })
   } catch {
-    // 无痕模式 / SSR 下写失败时忽略，会话仍在内存
+    // 环境不可用（无痕模式 / SSR / 配额）：静默忽略，会话仍在内存
   }
 }
